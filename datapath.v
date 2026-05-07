@@ -5,89 +5,148 @@ module datapath(
     input rst_n
 );
 
+    // REGISTERS
     reg [6:0]   pc;
     reg [15:0]  ir;
-    reg [15:0]  reg_f;
-    reg [15:0]  reg_d;   
-    reg         z;
+    reg [15:0]  result;
     
-    wire            wr_en;  
-    wire [1:0]      opcode;
-    wire [6:0]      address;
-    wire [15:0]     data_in;
-    wire [15:0]     data_out;
-    wire [6:0]      dir_d;
-    wire [6:0]      dir_f;
-    wire [6:0]      immediate;
+    // INSTRUCTIONS
+    localparam [3:0]
+        LOAD    = 4'b0000,
+        STORE   = 4'b0001,
+        ADD     = 4'b0010,
+        SUB     = 4'b0011,
+        ADDI    = 4'b0100,
+        MOVI    = 4'b0101,
+        BEQ     = 4'b0110,
+        BNE     = 4'b0111,
+        JMP    = 4'b1000;
 
-    parameter [1:0] FETCH   = 2'b00,
-                    LOAD_D  = 2'b01,
-                    LOAD_F  = 2'b10,
-                    WRITE   = 2'b11;
+    // STATES
+    parameter [2:0] FETCH   = 3'b000,
+                    DECODE  = 3'b001,
+                    EXEC    = 3'b010,
+                    MEM     = 3'b011,
+                    WB      = 3'b100;
+    reg [2:0] state;
 
-    reg [1:0] state;
 
-    mem MEM(
+    // MEMORY
+    wire        we_mem;
+    wire [6:0]  dir_mem;
+    wire [15:0] mem_data_in;
+    wire [15:0] mem_data_out;
+
+    mem MEMORY(
         .clk(clk),
-        .wr_en(wr_en),
-        .address(address),
-        .data_in(data_in),
-        .data_out(data_out)
+        .wr_en(we_mem),
+        .address(dir_mem),
+        .data_in(mem_data_in),
+        .data_out(mem_data_out)
     );
 
-    assign  opcode      =   ir[15:14];
-    assign  dir_d       =   ir[13:7];
-    assign  dir_f       =   ir[6:0];
-    assign  immediate   =   ir[6:0];
+    // REGISTER FILE
+    wire        we_reg;
+    wire [1:0]  rd_addr;
+    wire [1:0]  rs1_addr;
+    wire [1:0]  rs2_addr;
+    wire [15:0] rd_in;
+    wire [15:0] rs1_out;
+    wire [15:0] rs2_out;
 
-    assign  data_in =   (opcode == 2'b00) ? (reg_d + reg_f) :
-                        (opcode == 2'b01) ? reg_f :
-                        16'b0;
-    assign  address =   (state == FETCH)  ? pc :
-                        (state == LOAD_D) ? dir_d :
-                        (state == LOAD_F) ? dir_f  :
-                        (state == WRITE)  ? dir_d :
-                                            7'b0;
+    regfile RF(
+        .clk(clk),
+        .rst_n(rst_n),
+        .we(we_reg),
+        .rd_addr(rd_addr),
+        .rs1_addr(rs1_addr),
+        .rs2_addr(rs2_addr),
+        .rd_in(rd_in),
+        .rs1_out(rs1_out),
+        .rs2_out(rs2_out)  
+    );
+
+    // DECODE SIGNALS
+    wire [3:0]      opcode;
+    wire [1:0]      rd;
+    wire [1:0]      rs1;
+    wire [1:0]      rs2;
+    wire [6:0]      addr;
+    wire [5:0]      imm1;
+    wire [9:0]     imm2;
+
+    assign  opcode      =   ir[15:12];
+    assign  rd          =   ir[11:10];
+    assign  rs1         =   ir[9:8];
+    assign  rs2         =   ir[7:6];
+    assign  addr        =   ir[6:0];
+    assign  imm1        =   ir[5:0];
+    assign  imm2        =   ir[9:0];
+
+
+    // FETCH/MEM
+    assign dir_mem  =   (state == FETCH || state == DECODE) ? pc :
+                        ((opcode == LOAD || opcode == STORE) &&
+                        (state == EXEC || state == MEM || state == WB)) ? addr :
+                                                                        7'b0;
+    assign we_mem   =   (state == MEM) && (opcode == STORE);
+    assign mem_data_in = (state == MEM && opcode == STORE) ? rs1_out : 16'b0;
+
+    // DECODE
+    assign rs1_addr = rs1;
+    assign rs2_addr = rs2;
+
+    // WB
+    assign  rd_addr =   rd;
+    assign  we_reg  =   (state == WB) && (opcode == LOAD || opcode == ADD ||
+                            opcode == SUB || opcode == ADDI || opcode == MOVI);
+    assign  rd_in   =   (state == WB && opcode == LOAD) ? mem_data_out : result;
                 
-    assign wr_en    =   (state == WRITE) &&
-                        ((opcode == 2'b00) || (opcode == 2'b01));
 
     always @(posedge clk or negedge rst_n) begin
         if(!rst_n) begin
             pc <= 0;
+            ir <= 0;
             state <= FETCH;
-            z <= 0;
-            reg_d <= 0;
-            reg_f <= 0;
         end else begin
             case(state)
                             FETCH   :   begin
+                                            state <= DECODE;
+                                        end
+                            DECODE  :   begin
                                             pc <= pc + 1;
-                                            ir <= data_out;
-                                            state <= LOAD_D;
+                                            ir <= mem_data_out;            
+                                            state <= EXEC;
                                         end
-                            LOAD_D  :   begin
-                                            reg_d <= data_out;
-                                            state <= LOAD_F;
-                                        end
-                            LOAD_F  :   begin
-                                            if(opcode == 2'b11) begin    // BEQ
-                                                if(z) begin
-                                                    pc <= immediate;
+                            EXEC    :   begin
+                                            state <= MEM;
+                                            if(opcode == ADD)
+                                                result <= rs1_out + rs2_out;
+                                            else if(opcode == SUB)
+                                                result <= rs1_out - rs2_out;
+                                            else if(opcode == ADDI)
+                                                result <= rs1_out + {9'b0, imm1};
+                                            else if(opcode == MOVI)
+                                                result <= {6'b0, imm2};
+                                            else if(opcode == BEQ) begin
+                                                if(rs1_out == rs2_out) begin
+                                                    pc <= ir[6:0];
                                                 end
                                                 state <= FETCH;
-                                            end else begin
-                                                reg_f <= data_out;
-                                                state <= WRITE;
-                                            end
-                                            z <= 0;
+                                            end else if(opcode == BNE) begin
+                                                if(rs1_out != rs2_out) begin
+                                                    pc <= ir[6:0];
+                                                end
+                                                state <= FETCH;
+                                            end else if(opcode == JMP) begin
+                                                pc <= ir[6:0];
+                                                state <= FETCH;
+                                            end    
                                         end
-                            WRITE   :   begin
-                                            if(opcode == 2'b10)               // CMP
-                                                z <= (reg_d == reg_f);   
-                                            else begin
-                                                z <= 0;
-                                            end
+                            MEM     :   begin                        
+                                            state <= WB;
+                                        end
+                            WB      :   begin                                
                                             state <= FETCH;
                                         end
             endcase
