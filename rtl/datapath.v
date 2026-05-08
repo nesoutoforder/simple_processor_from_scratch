@@ -1,150 +1,195 @@
 `include "defs.vh"
 `timescale 1ns/1ps
 
-module datapath(
-    input clk,
-    input rst_n
+//------------------------------------------------------------------------------
+// CPU Datapath
+//------------------------------------------------------------------------------
+module datapath (
+    input clk_i,
+    input rst_ni
 );
 
-    // REGISTERS
-    reg [6:0]   pc;
-    reg [15:0]  ir;
-    reg [15:0]  result;
+    // -------------------------------------------------------------------------
+    // Core state registers
+    // -------------------------------------------------------------------------
+    reg [`CPU_ADDR_WIDTH-1:0] pc_q;
+    reg [`CPU_DATA_WIDTH-1:0] instr_q;
+    reg [`CPU_DATA_WIDTH-1:0] alu_result_q;
 
-    // CONTROL UNIT
-    wire [2:0] state;
-    wire       pc_write;
-    wire       ir_write;
-    wire       result_write;
-    wire       pc_src;
-    wire       we_mem;
-    wire       we_reg;
-    wire [1:0] alu_op;
+    // -------------------------------------------------------------------------
+    // Decoded instruction fields
+    // -------------------------------------------------------------------------
+    wire [`CPU_OPCODE_WIDTH-1:0]   opcode;
+    wire [`CPU_REG_ADDR_WIDTH-1:0] rd_addr;
+    wire [`CPU_REG_ADDR_WIDTH-1:0] rs1_addr;
+    wire [`CPU_REG_ADDR_WIDTH-1:0] rs2_addr;
+    wire [`CPU_ADDR_WIDTH-1:0]     instr_addr;
+    wire [5:0]                    imm6;
+    wire [9:0]                    imm10;
 
-    // MEMORY
-    wire [6:0]  dir_mem;
-    wire [15:0] mem_data_in;
-    wire [15:0] mem_data_out;
+    assign opcode     = instr_q[15:12];
+    assign rd_addr    = instr_q[11:10];
+    assign rs1_addr   = instr_q[9:8];
+    assign rs2_addr   = instr_q[7:6];
+    assign instr_addr = instr_q[6:0];
+    assign imm6       = instr_q[5:0];
+    assign imm10      = instr_q[9:0];
 
-    // REGISTER FILE
-    wire [1:0]  rd_addr;
-    wire [1:0]  rs1_addr;
-    wire [1:0]  rs2_addr;
-    wire [15:0] rd_in;
-    wire [15:0] rs1_out;
-    wire [15:0] rs2_out;
+    // -------------------------------------------------------------------------
+    // Control signals
+    // -------------------------------------------------------------------------
+    wire [`CPU_STATE_WIDTH-1:0]  ctrl_state;
+    wire                         pc_wr_en;
+    wire                         ir_wr_en;
+    wire                         alu_result_wr_en;
+    wire                         pc_src_branch;
+    wire                         dmem_wr_en;
+    wire                         regfile_wr_en;
+    wire [`CPU_ALU_OP_WIDTH-1:0] alu_op;
 
+    // -------------------------------------------------------------------------
+    // Instruction memory interface
+    // -------------------------------------------------------------------------
+    wire [`CPU_ADDR_WIDTH-1:0]     imem_addr;
+    wire [`CPU_DATA_WIDTH-1:0]     imem_instr;
+
+    // -------------------------------------------------------------------------
+    // Data memory interface
+    // -------------------------------------------------------------------------
+    wire [`CPU_ADDR_WIDTH-1:0]     dmem_addr;
+    wire [`CPU_DATA_WIDTH-1:0]     dmem_wr_data;
+    wire [`CPU_DATA_WIDTH-1:0]     dmem_rd_data;
+
+    // -------------------------------------------------------------------------
+    // Register file interface
+    // -------------------------------------------------------------------------
+    wire [`CPU_DATA_WIDTH-1:0]     regfile_wr_data;
+    wire [`CPU_DATA_WIDTH-1:0]     rs1_data;
+    wire [`CPU_DATA_WIDTH-1:0]     rs2_data;
+
+    // -------------------------------------------------------------------------
+    // ALU interface
+    // -------------------------------------------------------------------------
+    wire [`CPU_DATA_WIDTH-1:0]     alu_op_a;
+    wire [`CPU_DATA_WIDTH-1:0]     alu_op_b;
+    wire [`CPU_DATA_WIDTH-1:0]     alu_result;
+    wire                           alu_zero;
+    wire                           alu_carry;
+    wire                           alu_borrow;
+
+    // -------------------------------------------------------------------------
+    // Control unit
+    // -------------------------------------------------------------------------
+    control_unit u_control_unit (
+        .clk_i                (clk_i),
+        .rst_ni               (rst_ni),
+        .opcode_i             (opcode),
+        .alu_zero_i           (alu_zero),
+
+        .state_o              (ctrl_state),
+        .pc_wr_en_o           (pc_wr_en),
+        .ir_wr_en_o           (ir_wr_en),
+        .alu_result_wr_en_o   (alu_result_wr_en),
+        .pc_src_branch_o      (pc_src_branch),
+        .dmem_wr_en_o         (dmem_wr_en),
+        .regfile_wr_en_o      (regfile_wr_en),
+        .alu_op_o             (alu_op)
+    );
+
+    // -------------------------------------------------------------------------
+    // Memories
+    // -------------------------------------------------------------------------
+    imem u_imem (
+        .clk_i   (clk_i),
+        .addr_i  (imem_addr),
+        .instr_o (imem_instr)
+    );
+
+    dmem u_dmem (
+        .clk_i     (clk_i),
+        .wr_en_i   (dmem_wr_en),
+        .addr_i    (dmem_addr),
+        .wr_data_i (dmem_wr_data),
+        .rd_data_o (dmem_rd_data)
+    );
+
+    // -------------------------------------------------------------------------
+    // Register file
+    // -------------------------------------------------------------------------
+    regfile u_regfile (
+        .clk_i      (clk_i),
+        .rst_ni     (rst_ni),
+        .wr_en_i    (regfile_wr_en),
+        .wr_addr_i  (rd_addr),
+        .wr_data_i  (regfile_wr_data),
+        .rs1_addr_i (rs1_addr),
+        .rs2_addr_i (rs2_addr),
+        .rs1_data_o (rs1_data),
+        .rs2_data_o (rs2_data)
+    );
+
+    // -------------------------------------------------------------------------
     // ALU
-    wire [15:0] A;
-    wire [15:0] B;
-    wire [15:0] res;
-    wire c;
-    wire b;
-    wire z;
-
-    // DECODE SIGNALS
-    wire [3:0]      opcode;
-    wire [1:0]      rd;
-    wire [1:0]      rs1;
-    wire [1:0]      rs2;
-    wire [6:0]      addr;
-    wire [5:0]      imm1;
-    wire [9:0]      imm2;
-
-    control_unit CU(
-        .clk(clk),
-        .rst_n(rst_n),
-        .opcode(opcode),
-        .z(z),
-
-        .state(state),
-        .pc_write(pc_write),
-        .ir_write(ir_write),
-        .result_write(result_write),
-        .pc_src(pc_src),
-        .we_mem(we_mem),
-        .we_reg(we_reg),
-        .alu_op(alu_op)
+    // -------------------------------------------------------------------------
+    alu u_alu (
+        .alu_op_i  (alu_op),
+        .op_a_i    (alu_op_a),
+        .op_b_i    (alu_op_b),
+        .result_o  (alu_result),
+        .zero_o    (alu_zero),
+        .carry_o   (alu_carry),
+        .borrow_o  (alu_borrow)
     );
 
-    mem MEMORY(
-        .clk(clk),
-        .wr_en(we_mem),
-        .address(dir_mem),
-        .data_in(mem_data_in),
-        .data_out(mem_data_out)
-    );
+    // -------------------------------------------------------------------------
+    // Datapath muxing
+    // -------------------------------------------------------------------------
+    assign imem_addr = ((ctrl_state == `CPU_ST_FETCH) ||
+                        (ctrl_state == `CPU_ST_DECODE)) ? pc_q :
+                                                          {`CPU_ADDR_WIDTH{1'b0}};
 
-    regfile RF(
-        .clk(clk),
-        .rst_n(rst_n),
-        .we(we_reg),
-        .rd_addr(rd_addr),
-        .rs1_addr(rs1_addr),
-        .rs2_addr(rs2_addr),
-        .rd_in(rd_in),
-        .rs1_out(rs1_out),
-        .rs2_out(rs2_out)  
-    );
+    assign dmem_addr = (((opcode == `OPC_LOAD) || (opcode == `OPC_STORE)) &&
+                        ((ctrl_state == `CPU_ST_EXEC) ||
+                         (ctrl_state == `CPU_ST_MEM)  ||
+                         (ctrl_state == `CPU_ST_WB))) ? instr_addr :
+                                                        {`CPU_ADDR_WIDTH{1'b0}};
 
-    alu ALU(
-        .op(alu_op),
-        .A(A),
-        .B(B),
-        .result(res),
-        .c(c),
-        .b(b),
-        .z(z)
-    );
+    assign dmem_wr_data = (opcode == `OPC_STORE) ? rs1_data :
+                                                   {`CPU_DATA_WIDTH{1'b0}};
 
-    assign  opcode      =   ir[15:12];
-    assign  rd          =   ir[11:10];
-    assign  rs1         =   ir[9:8];
-    assign  rs2         =   ir[7:6];
-    assign  addr        =   ir[6:0];
-    assign  imm1        =   ir[5:0];
-    assign  imm2        =   ir[9:0];
+    assign alu_op_a = (opcode == `OPC_MOVI) ? {`CPU_DATA_WIDTH{1'b0}} :
+                                              rs1_data;
 
+    assign alu_op_b = (opcode == `OPC_ADDI) ? {{10{1'b0}}, imm6}  :
+                      (opcode == `OPC_MOVI) ? {{6{1'b0}}, imm10}  :
+                                              rs2_data;
 
-    // FETCH/MEM
-    assign dir_mem  =   (state == `FETCH || state == `DECODE) ? pc :
-                        ((opcode == `LOAD || opcode == `STORE) &&
-                        (state == `EXEC || state == `MEM || state == `WB)) ? addr :
-                                                                        7'b0;
-    assign mem_data_in = (state == `MEM && opcode == `STORE) ? rs1_out : 16'b0;
+    assign regfile_wr_data = (opcode == `OPC_LOAD) ? dmem_rd_data :
+                                                    alu_result_q;
 
-    // DECODE
-    assign rs1_addr = rs1;
-    assign rs2_addr = rs2;
-
-    // EXEC
-    assign A =  (opcode == `MOVI) ? 16'b0 : rs1_out;
-    assign B =  (opcode == `ADDI) ? {10'b0, imm1} :
-            (opcode == `MOVI) ? {6'b0, imm2}  :
-                                 rs2_out;
-
-    // WB
-    assign  rd_addr =   rd;
-    assign  rd_in   =   (state == `WB && opcode == `LOAD) ? mem_data_out : result;
-                
-
-    always @(posedge clk or negedge rst_n) begin
-        if(!rst_n) begin
-            pc     <= 0;
-            ir     <= 0;
-            result <= 0;
+    // -------------------------------------------------------------------------
+    // Datapath state registers
+    // -------------------------------------------------------------------------
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            pc_q         <= {`CPU_ADDR_WIDTH{1'b0}};
+            instr_q      <= {`CPU_DATA_WIDTH{1'b0}};
+            alu_result_q <= {`CPU_DATA_WIDTH{1'b0}};
         end else begin
-            if(ir_write)
-                ir <= mem_data_out;
+            if (ir_wr_en) begin
+                instr_q <= imem_instr;
+            end
 
-            if(result_write)
-                result <= res;
+            if (alu_result_wr_en) begin
+                alu_result_q <= alu_result;
+            end
 
-            if(pc_write) begin
-                if(pc_src)
-                    pc <= addr;
-                else
-                    pc <= pc + 1;
+            if (pc_wr_en) begin
+                if (pc_src_branch) begin
+                    pc_q <= instr_addr;
+                end else begin
+                    pc_q <= pc_q + {{(`CPU_ADDR_WIDTH-1){1'b0}}, 1'b1};
+                end
             end
         end
     end

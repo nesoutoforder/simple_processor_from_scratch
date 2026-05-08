@@ -1,93 +1,133 @@
 `include "defs.vh"
 `timescale 1ns/1ps
 
-module control_unit(
-    input clk,
-    input rst_n,
-    input [3:0] opcode,
-    input z,
+//------------------------------------------------------------------------------
+// Control Unit
+//------------------------------------------------------------------------------
+module control_unit (
+    input                             clk_i,
+    input                             rst_ni,
 
-    output reg [2:0] state,
-    output reg pc_write,
-    output reg ir_write,
-    output reg result_write,
-    output reg pc_src,
-    output reg we_mem,
-    output reg we_reg,
-    output reg [1:0] alu_op
+    input  [`CPU_OPCODE_WIDTH-1:0]    opcode_i,
+    input                             alu_zero_i,
+
+    output reg [`CPU_STATE_WIDTH-1:0] state_o,
+    output reg                        pc_wr_en_o,
+    output reg                        ir_wr_en_o,
+    output reg                        alu_result_wr_en_o,
+    output reg                        pc_src_branch_o,
+    output reg                        dmem_wr_en_o,
+    output reg                        regfile_wr_en_o,
+    output reg [`CPU_ALU_OP_WIDTH-1:0] alu_op_o
 );
 
-    always @(*) begin
-        pc_write    = 1'b0;
-        ir_write    = 1'b0;
-        result_write = 1'b0;
-        pc_src      = 1'b0;
-        we_mem      = 1'b0;
-        we_reg      = 1'b0;
-        alu_op      = `ALU_ADD;
+    reg [`CPU_STATE_WIDTH-1:0] next_state;
 
-        case(state)
-            `DECODE: begin
-                pc_write = 1'b1;
-                ir_write = 1'b1;
+    // Control signal decode
+    always @(*) begin
+        pc_wr_en_o          = 1'b0;
+        ir_wr_en_o          = 1'b0;
+        alu_result_wr_en_o  = 1'b0;
+        pc_src_branch_o     = 1'b0;
+        dmem_wr_en_o        = 1'b0;
+        regfile_wr_en_o     = 1'b0;
+        alu_op_o            = `ALU_OP_ADD;
+
+        case (state_o)
+            `CPU_ST_DECODE: begin
+                // Instruction memory is synchronous. The instruction requested
+                // in FETCH is captured into the IR in DECODE.
+                ir_wr_en_o = 1'b1;
+                pc_wr_en_o = 1'b1;
             end
 
-            `EXEC: begin
-                result_write = 1'b1;
+            `CPU_ST_EXEC: begin
+                alu_result_wr_en_o = 1'b1;
 
-                if(opcode == `SUB)
-                    alu_op = `ALU_SUB;
-                else if(opcode == `BEQ || opcode == `BNE)
-                    alu_op = `ALU_COMP;
-                else
-                    alu_op = `ALU_ADD;
+                case (opcode_i)
+                    `OPC_SUB: begin
+                        alu_op_o = `ALU_OP_SUB;
+                    end
 
-                if(opcode == `BEQ && z) begin
-                    pc_write = 1'b1;
-                    pc_src = 1'b1;
-                end else if(opcode == `BNE && !z) begin
-                    pc_write = 1'b1;
-                    pc_src = 1'b1;
-                end else if(opcode == `JMP) begin
-                    pc_write = 1'b1;
-                    pc_src = 1'b1;
+                    `OPC_BEQ,
+                    `OPC_BNE: begin
+                        alu_op_o = `ALU_OP_CMP;
+                    end
+
+                    default: begin
+                        alu_op_o = `ALU_OP_ADD;
+                    end
+                endcase
+
+                if ((opcode_i == `OPC_BEQ &&  alu_zero_i) ||
+                    (opcode_i == `OPC_BNE && !alu_zero_i) ||
+                    (opcode_i == `OPC_JMP)) begin
+                    pc_wr_en_o      = 1'b1;
+                    pc_src_branch_o = 1'b1;
                 end
             end
 
-            `MEM: begin
-                if(opcode == `STORE)
-                    we_mem = 1'b1;
+            `CPU_ST_MEM: begin
+                dmem_wr_en_o = (opcode_i == `OPC_STORE);
             end
 
-            `WB: begin
-                if(opcode == `LOAD || opcode == `ADD ||
-                   opcode == `SUB  || opcode == `ADDI ||
-                   opcode == `MOVI)
-                    we_reg = 1'b1;
+            `CPU_ST_WB: begin
+                regfile_wr_en_o = (opcode_i == `OPC_LOAD) ||
+                                   (opcode_i == `OPC_ADD)  ||
+                                   (opcode_i == `OPC_SUB)  ||
+                                   (opcode_i == `OPC_ADDI) ||
+                                   (opcode_i == `OPC_MOVI);
+            end
+
+            default: begin
+                // No control outputs asserted by default.
             end
         endcase
     end
 
-    always @(posedge clk or negedge rst_n) begin
-        if(!rst_n) begin
-            state <= `FETCH;
-        end else begin
-            case(state)
-                `FETCH:  state <= `DECODE;
-                `DECODE: state <= `EXEC;
+    // Next-state logic
+    always @(*) begin
+        next_state = `CPU_ST_FETCH;
 
-                `EXEC: begin
-                    if(opcode == `BEQ || opcode == `BNE || opcode == `JMP)
-                        state <= `FETCH;
-                    else
-                        state <= `MEM;
+        case (state_o)
+            `CPU_ST_FETCH: begin
+                next_state = `CPU_ST_DECODE;
+            end
+
+            `CPU_ST_DECODE: begin
+                next_state = `CPU_ST_EXEC;
+            end
+
+            `CPU_ST_EXEC: begin
+                if ((opcode_i == `OPC_BEQ) ||
+                    (opcode_i == `OPC_BNE) ||
+                    (opcode_i == `OPC_JMP)) begin
+                    next_state = `CPU_ST_FETCH;
+                end else begin
+                    next_state = `CPU_ST_MEM;
                 end
+            end
 
-                `MEM: state <= `WB;
-                `WB:  state <= `FETCH;
+            `CPU_ST_MEM: begin
+                next_state = `CPU_ST_WB;
+            end
 
-                default: state <= `FETCH;
-            endcase
+            `CPU_ST_WB: begin
+                next_state = `CPU_ST_FETCH;
+            end
+
+            default: begin
+                next_state = `CPU_ST_FETCH;
+            end
+        endcase
+    end
+
+    // FSM state register
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            state_o <= `CPU_ST_FETCH;
+        end else begin
+            state_o <= next_state;
         end
     end
 

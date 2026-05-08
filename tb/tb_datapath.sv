@@ -8,8 +8,8 @@ module tb_datapath();
     always #0.5 clk = ~clk;
 
     datapath DUT (
-        .clk(clk),
-        .rst_n(rst_n)
+        .clk_i(clk),
+        .rst_ni(rst_n)
     );
 
     initial begin
