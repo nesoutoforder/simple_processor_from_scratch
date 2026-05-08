@@ -99,7 +99,12 @@ module datapath (
     // -------------------------------------------------------------------------
     // Memories
     // -------------------------------------------------------------------------
-    imem u_imem (
+    `ifndef IMEM_INIT_FILE
+    `define IMEM_INIT_FILE "programs/mem_init.hex"
+    `endif
+    imem #(
+    .IMEM_INIT_FILE(`IMEM_INIT_FILE)
+    ) u_imem (
         .clk_i   (clk_i),
         .addr_i  (imem_addr),
         .instr_o (imem_instr)

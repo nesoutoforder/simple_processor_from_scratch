@@ -1,0 +1,25 @@
+name: RTL CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  iverilog-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Icarus Verilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iverilog
+
+      - name: Make test scripts executable
+        run: chmod +x tests/*.sh
+
+      - name: Run RTL tests
+        run: ./tests/run_tests_iverilog.sh
+

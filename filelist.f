@@ -6,3 +6,4 @@ rtl/dmem.v
 rtl/control_unit.v
 rtl/datapath.v
 tb/tb_datapath.sv
+tb/tb_ipc.sv

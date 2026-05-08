@@ -14,10 +14,12 @@ module imem #(
     output reg [`CPU_DATA_WIDTH-1:0] instr_o
 );
 
-    reg [`CPU_DATA_WIDTH-1:0] mem_q [0:(1 << `CPU_ADDR_WIDTH)-1];
+    localparam IMEM_DEPTH = (1 << `CPU_ADDR_WIDTH);
+
+    reg [`CPU_DATA_WIDTH-1:0] mem_q [0:IMEM_DEPTH-1];
 
     initial begin
-        $readmemh(IMEM_INIT_FILE, mem_q, 0, (1 << `CPU_ADDR_WIDTH)-1);
+        $readmemh(IMEM_INIT_FILE, mem_q, 0, IMEM_DEPTH-1);
     end
 
     always @(posedge clk_i) begin
