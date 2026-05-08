@@ -11,7 +11,7 @@ module mem(
     reg [15:0] mem [0:127];
 
     initial begin
-        $readmemh("mem_init.hex", mem, 0, 127);
+        $readmemh("programs/mem_init.hex", mem, 0, 127);
     end
 
     always @ (posedge clk) begin
